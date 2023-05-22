@@ -1,4 +1,135 @@
-hola chao ses llll
-ajajaj lol sjs 
-pa dr ewfr
-r
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"reflect"
+	"unsafe"
+)
+
+var connections = make(map[string]net.Conn)
+
+type Message struct {
+	User    string `json:"user"`
+	Message string `json:"message"`
+}
+
+type User struct {
+	Nickname string `json:"nickname"`
+}
+
+var server = User{
+	Nickname: "Server",
+}
+
+func main() {
+	SetProcessName("Serv7")
+	ln, err := net.Listen("tcp", "0.0.0.0:9085")
+	if err != nil {
+		panic(err)
+	}
+	defer ln.Close()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	decoder := json.NewDecoder(conn)
+	var user User
+	err := decoder.Decode(&user)
+	if err != nil {
+		return
+	}
+
+	//Check if the nickname is already in use
+	if _, ok := connections[user.Nickname]; ok {
+		encoding := json.NewEncoder(conn)
+		err = encoding.Encode(Message{server.Nickname, "Nickname already in use, please choose another one:"})
+		if err != nil {
+			panic(err)
+		}
+	}
+
+
+	//Add the connection to the map
+	connections[user.Nickname] = conn
+	fmt.Println("New user:", user.Nickname)
+
+	//Send welcome message
+	encoding := json.NewEncoder(conn)
+	err = encoding.Encode(Message{server.Nickname, "Welcome to the chat " + user.Nickname + "!"})
+	if err != nil {
+		return
+	}
+
+	//Send a message to all users that a new user has joined
+	for _, c := range connections {
+		if c != conn {
+			encoding := json.NewEncoder(c)
+			err = encoding.Encode(Message{server.Nickname, user.Nickname + " has joined the chat!"})
+			if err != nil {
+				return
+			}
+		}
+	}
+
+	//Remove the user from the map when the connection is closed
+	defer func() {
+		delete(connections, user.Nickname)
+		sendUserDisconnectedMessage(user.Nickname)
+		fmt.Println("User disconnected:", user.Nickname)
+	}()
+
+	//Read messages from the user
+	for {
+		var message Message
+		decoder := json.NewDecoder(conn)
+		err := decoder.Decode(&message)
+		if err != nil {
+			return
+		}
+
+		//Send the message to all users
+		for _, c := range connections {
+			if c != conn {
+				encoding := json.NewEncoder(c)
+				err = encoding.Encode(message)
+				if err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+// Send a message to all users that a user has disconnected
+func sendUserDisconnectedMessage(user string) {
+	for _, c := range connections {
+		encoding := json.NewEncoder(c)
+		err := encoding.Encode(Message{server.Nickname, user + " has disconnected!"})
+		if err != nil {
+			return
+		}
+	}
+}
+
+// SetProcessName sets the process name
+func SetProcessName(name string) error {
+	argv0str := (*reflect.StringHeader)(unsafe.Pointer(&os.Args[0]))
+	argv0 := (*[1 << 30]byte)(unsafe.Pointer(argv0str.Data))[:argv0str.Len]
+
+	n := copy(argv0, name)
+	if n < len(argv0) {
+		argv0[n] = 0
+	}
+	return nil
+}
